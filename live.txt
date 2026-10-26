@@ -1,0 +1,90 @@
+run: https://github.com/Sype0/gki-kernel-tapas/actions/runs/40336435169  2026-10-26T14:26:39Z
+               total        used        free      shared  buff/cache   available
+Mem:           15988       13025         170          48        3187        2963
+Swap:          19455           0       19455
+NAME          TYPE SIZE USED PRIO
+/swapfile     file   3G  80K   -2
+/mnt/gki-swap file  16G   0B   -3
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root       145G   63G   82G  44% /
+/dev/root       145G   63G   82G  44% /
+---- memory
+== 14:09:26 mem used 1359M avail 14628M, swap used 0M of 19455M, 83G free
+== 14:10:26 mem used 1335M avail 14653M, swap used 0M of 19455M, 83G free
+== 14:11:26 mem used 1294M avail 14694M, swap used 0M of 19455M, 83G free
+== 14:12:26 mem used 1458M avail 14529M, swap used 0M of 19455M, 83G free
+== 14:13:26 mem used 1383M avail 14604M, swap used 0M of 19455M, 83G free
+== 14:14:26 mem used 1320M avail 14668M, swap used 0M of 19455M, 83G free
+== 14:15:26 mem used 1441M avail 14546M, swap used 0M of 19455M, 83G free
+== 14:16:26 mem used 1457M avail 14531M, swap used 0M of 19455M, 83G free
+== 14:17:26 mem used 1390M avail 14598M, swap used 0M of 19455M, 83G free
+== 14:18:26 mem used 1425M avail 14562M, swap used 0M of 19455M, 82G free
+== 14:19:26 mem used 3867M avail 12121M, swap used 0M of 19455M, 82G free
+== 14:20:26 mem used 6963M avail 9025M, swap used 0M of 19455M, 82G free
+== 14:21:27 mem used 8274M avail 7714M, swap used 0M of 19455M, 82G free
+== 14:22:27 mem used 8280M avail 7708M, swap used 0M of 19455M, 82G free
+== 14:23:27 mem used 8743M avail 7245M, swap used 0M of 19455M, 82G free
+== 14:24:27 mem used 9488M avail 6500M, swap used 0M of 19455M, 82G free
+== 14:25:27 mem used 10389M avail 5598M, swap used 0M of 19455M, 82G free
+== 14:26:27 mem used 13002M avail 2986M, swap used 0M of 19455M, 82G free
+---- build
+  AR      drivers/iio/imu/st_lsm6dsx/built-in.a
+  AR      drivers/iio/imu/st_lsm9ds0/built-in.a
+  AR      drivers/iio/imu/built-in.a
+  AR      drivers/iio/light/built-in.a
+  AR      drivers/iio/magnetometer/built-in.a
+  AR      drivers/iio/multiplexer/built-in.a
+  AR      drivers/iio/orientation/built-in.a
+  AR      drivers/iio/position/built-in.a
+  AR      drivers/iio/potentiometer/built-in.a
+  AR      drivers/iio/potentiostat/built-in.a
+  AR      drivers/iio/pressure/built-in.a
+  CC      drivers/powercap/idle_inject.o
+  AR      drivers/iio/proximity/built-in.a
+  AR      drivers/iio/resolver/built-in.a
+  AR      drivers/iio/temperature/built-in.a
+  AR      drivers/iio/test/built-in.a
+  AR      drivers/iio/trigger/built-in.a
+  CC      drivers/iio/industrialio-core.o
+  CC      drivers/hid/hid-steam.o
+  CC      drivers/perf/arm_pmu_platform.o
+  AR      drivers/powercap/built-in.a
+  CC      drivers/hid/hid-uclogic-core.o
+  CC      drivers/ras/ras.o
+  CC      drivers/hid/hid-uclogic-rdesc.o
+  AR      drivers/perf/built-in.a
+  CC      drivers/iio/industrialio-event.o
+  CC      drivers/ras/debugfs.o
+  CC      drivers/hid/hid-uclogic-params.o
+  CC      drivers/iio/inkern.o
+  AR      drivers/ras/built-in.a
+  AR      drivers/hwtracing/intel_th/built-in.a
+  CC      drivers/hid/wacom_wac.o
+  CC      drivers/android/binderfs.o
+  CC      drivers/nvmem/core.o
+  CC      drivers/iio/industrialio-buffer.o
+  CC      drivers/android/binder.o
+  CC      drivers/hid/wacom_sys.o
+  AR      drivers/nvmem/built-in.a
+  CC      drivers/hid/hid-wiimote-core.o
+  CC      drivers/iio/industrialio-trigger.o
+  CC      drivers/android/binder_alloc.o
+  CC      drivers/hid/hid-wiimote-modules.o
+  CC      drivers/hid/hid-wiimote-debug.o
+  AR      drivers/iio/built-in.a
+  CC      drivers/android/android_debug_symbols.o
+  CC      drivers/gnss/core.o
+  AR      drivers/hid/built-in.a
+  CC      drivers/android/vendor_hooks.o
+  AR      drivers/gnss/built-in.a
+  CC      drivers/interconnect/core.o
+  CC      drivers/interconnect/bulk.o
+  AR      drivers/interconnect/built-in.a
+  AR      drivers/android/built-in.a
+  AR      drivers/built-in.a
+  CHK     include/generated/autoksyms.h
+  GEN     .version
+  CHK     include/generated/compile.h
+  GEN     .tmp_initcalls.lds
+  GEN     .tmp_symversions.lds
+  LTO     vmlinux.o
