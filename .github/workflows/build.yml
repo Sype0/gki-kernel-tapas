@@ -1,0 +1,185 @@
+name: Build GKI kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      gki_bid:
+        description: Google CI build id to rebuild; its manifest pins every source and its outputs are the reference
+        default: "16692739"  # android13-5.15-2026-09_r3, 5.15.211
+      base_boot:
+        description: boot.img now on the phone; its header and AVB metadata are reused
+        default: https://github.com/Sype0/crdroid_android/releases/download/topaz-20261026-27/boot.img
+      vendor_modules:
+        description: Repo with the phone's vendor modules (vendor_dlkm/, vendor_ramdisk/)
+        default: https://github.com/BaranAspect-Development/android_kernel_xiaomi_topaz
+      vendor_modules_ref:
+        description: Branch of that repo
+        default: lineage-23.0
+
+permissions:
+  contents: write
+
+env:
+  CI_RAW: https://ci.android.com/builds/submitted/${{ inputs.gki_bid }}/kernel_aarch64/latest/raw
+  # avbtool and the AOSP test key the ROM signs boot.img with, pinned
+  AVB_COMMIT: 761178607206f4cb2af79ed9eec52d8cbd814adb
+  AVBTOOL_SHA256: e5a664a38db623da00f080219bc0ee60a640a9dc4a872803616fae4938ac749b
+  TESTKEY_SHA256: 6a224754880a57ab9cbd308267cd157d94cf05a1c8cb851aec4090e045d24121
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare disk and swap
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost || true
+          # Work on whichever disk has more room (the runner's /mnt is usually the larger one)
+          root_free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
+          mnt_free=$(df --output=avail -BG /mnt 2>/dev/null | tail -1 | tr -dc 0-9)
+          if [ "${mnt_free:-0}" -gt "$root_free" ]; then W=/mnt/gki; else W=$HOME/gki; fi
+          sudo mkdir -p "$W" && sudo chown "$USER:$USER" "$W"
+          echo "W=$W" >> "$GITHUB_ENV"
+          # Full LTO links vmlinux in one go; give it room beyond the 16 GB of RAM
+          sudo fallocate -l 8G "$W/../gki-swap" && sudo chmod 600 "$W/../gki-swap" &&
+            sudo mkswap -q "$W/../gki-swap" && sudo swapon "$W/../gki-swap" || echo "::warning::No extra swap"
+          df -h / "$W"; free -h; nproc
+
+      - name: Install repo
+        run: |
+          sudo curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o /usr/local/bin/repo
+          sudo chmod a+x /usr/local/bin/repo
+          git config --global user.name ci
+          git config --global user.email ci@localhost
+          git config --global color.ui false
+
+      - name: Sync the sources of build ${{ inputs.gki_bid }}
+        working-directory: ${{ env.W }}
+        run: |
+          curl -fsSL "$CI_RAW/manifest_${{ inputs.gki_bid }}.xml" -o pinned.xml
+          branch=$(sed -n 's/.*<superproject [^>]*revision="\([^"]*\)".*/\1/p' pinned.xml)
+          [ -n "$branch" ] || { echo "::error::No branch in the build's manifest"; exit 1; }
+          echo "Manifest branch: $branch"
+          repo init -u https://android.googlesource.com/kernel/manifest -b "$branch" --depth=1 --no-use-superproject
+          # Every project at the exact revision Google built
+          cp pinned.xml .repo/manifests/pinned.xml
+          repo init -m pinned.xml --no-use-superproject
+          repo sync -c --no-tags --no-clone-bundle --no-use-superproject -j8
+          git -C common log -1 --format='common: %H %s'
+          df -h .
+
+      - name: Build (same command as Google CI)
+        working-directory: ${{ env.W }}
+        run: |
+          BUILD_CONFIG=common/build.config.gki.aarch64 DIST_DIR="$W/dist" build/build.sh -j"$(nproc)" > build.log 2>&1 ||
+            { tail -100 build.log; exit 1; }
+          grep -iE "warning:|error:" build.log | head -50 || true
+          ls -l dist
+
+      - name: Compare with Google's certified build
+        working-directory: ${{ env.W }}
+        run: |
+          mkdir -p ref
+          for f in vmlinux.symvers Image; do curl -fsSL "$CI_RAW/$f" -o "ref/$f"; done
+          # Same exported symbols with the same CRCs means the same KMI as Google's kernel
+          if diff <(sort dist/vmlinux.symvers) <(sort ref/vmlinux.symvers) > symvers.diff; then
+            echo "vmlinux.symvers is identical to Google's"
+          else
+            head -40 symvers.diff; echo "::error::Exported symbols differ from Google's build"; exit 1
+          fi
+          strings -a dist/Image | grep -m1 "^Linux version"
+          strings -a ref/Image | grep -m1 "^Linux version"
+          python3 -I - dist/Image ref/Image <<'PY'
+          import sys
+          a, b = (open(p, "rb").read() for p in sys.argv[1:])
+          n = sum(x != y for x, y in zip(a, b)) + abs(len(a) - len(b))
+          print(f"Image: {len(a)} vs {len(b)} bytes, {n} bytes differ (build key, version string)")
+          PY
+
+      - name: Check the phone's vendor modules against this kernel
+        working-directory: ${{ env.W }}
+        run: |
+          git clone -q --depth=1 -b "${{ inputs.vendor_modules_ref }}" "${{ inputs.vendor_modules }}" vendor-modules
+          python3 -I "$GITHUB_WORKSPACE/scripts/check_vendor_abi.py" --symvers dist/vmlinux.symvers \
+            --gki-module dist/zram.ko --gki-module dist/zsmalloc.ko \
+            vendor-modules/vendor_dlkm vendor-modules/vendor_ramdisk | tee abi-report.txt
+
+      - name: Make boot.img and system_dlkm.img
+        working-directory: ${{ env.W }}
+        run: |
+          mkdir -p tools release
+          avb=https://android.googlesource.com/platform/external/avb/+/$AVB_COMMIT
+          curl -fsSL "$avb/avbtool.py?format=TEXT" | base64 -d > tools/avbtool.py
+          curl -fsSL "$avb/test/data/testkey_rsa4096.pem?format=TEXT" | base64 -d > tools/testkey_rsa4096.pem
+          sha256sum -c <<< "$AVBTOOL_SHA256  tools/avbtool.py
+          $TESTKEY_SHA256  tools/testkey_rsa4096.pem"
+          curl -fsSL "${{ inputs.base_boot }}" -o tools/base-boot.img
+          mk() { python3 -I "$GITHUB_WORKSPACE/scripts/make_boot.py" --base tools/base-boot.img "$@"; }
+          # Self-test: rebuilt from its own kernel, the base must come back byte for byte
+          mk --extract-kernel tools/base-Image
+          mk --kernel tools/base-Image --key tools/testkey_rsa4096.pem --avbtool tools/avbtool.py -o tools/selftest.img
+          cmp tools/selftest.img tools/base-boot.img && echo "Self-test: base boot.img reproduced exactly"
+          mk --kernel dist/Image --key tools/testkey_rsa4096.pem --avbtool tools/avbtool.py -o release/boot.img
+          # The GKI modules (zram, zsmalloc) are signed with this build's key and must ship with it
+          release=$(strings -a dist/Image | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
+          strings -a dist/system_dlkm.img | grep -q "vermagic=$release " ||
+            { echo "::error::system_dlkm.img was not built for $release"; exit 1; }
+          grep -c "u:object_r:system_dlkm_file:s0" <(strings -a dist/system_dlkm.img)
+          cp dist/system_dlkm.img dist/Image dist/vmlinux.symvers abi-report.txt release/
+          echo "RELEASE=$release" >> "$GITHUB_ENV"
+
+      # GPLv2: ship the corresponding source next to the binaries
+      - name: Package the kernel source
+        working-directory: ${{ env.W }}
+        run: |
+          sha=$(git -C common rev-parse HEAD)
+          git -C common archive --format=tar --prefix="common-$sha/" HEAD | xz -T0 -6 > "release/kernel-source-common-$sha.tar.xz"
+          cp pinned.xml "release/manifest_${{ inputs.gki_bid }}.xml"
+          echo "SOURCE_SHA=$sha" >> "$GITHUB_ENV"
+          ls -l release
+
+      - name: Publish
+        working-directory: ${{ env.W }}/release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha256sum * > SHA256SUMS
+          tag="gki-${RELEASE%%-*}-$(date +%Y%m%d)-${{ github.run_number }}"
+          {
+            echo "Kernel: \`$RELEASE\`"
+            echo
+            echo "Rebuilt from the sources of Google CI build ${{ inputs.gki_bid }} with the same command."
+            echo "vmlinux.symvers is identical to Google's; vendor module check: $(tail -1 abi-report.txt)"
+            echo
+            echo "Source (GPLv2): \`kernel/common\` at \`$SOURCE_SHA\`, attached as \`kernel-source-common-$SOURCE_SHA.tar.xz\`."
+            echo "Every project and revision used is in \`manifest_${{ inputs.gki_bid }}.xml\`; build with"
+            echo "\`BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh\`."
+            echo
+            echo "Header and AVB metadata from ${{ inputs.base_boot }}"
+            echo
+            echo '```'
+            echo "fastboot boot boot.img                    # test, writes nothing"
+            echo "fastboot flash boot boot.img"
+            echo "fastboot reboot fastboot"
+            echo "fastboot flash system_dlkm system_dlkm.img"
+            echo "fastboot reboot"
+            echo '```'
+          } > ../notes.md
+          gh release create "$tag" * -R "$GITHUB_REPOSITORY" --title "GKI $RELEASE" --notes-file ../notes.md
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            ${{ env.W }}/build.log
+            ${{ env.W }}/symvers.diff
+            ${{ env.W }}/abi-report.txt
+          if-no-files-found: ignore
