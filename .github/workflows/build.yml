@@ -121,21 +121,22 @@ jobs:
         working-directory: ${{ env.W }}
         run: |
           mkdir -p ref
-          for f in vmlinux.symvers Image; do curl -fsSL "$CI_RAW/$f" -o "ref/$f"; done
+          for f in vmlinux.symvers System.map Image; do curl -fsSL "$CI_RAW/$f" -o "ref/$f"; done
           # Same exported symbols with the same CRCs means the same KMI as Google's kernel
           if diff <(sort dist/vmlinux.symvers) <(sort ref/vmlinux.symvers) > symvers.diff; then
             echo "vmlinux.symvers is identical to Google's"
           else
             head -40 symvers.diff; echo "::error::Exported symbols differ from Google's build"; exit 1
           fi
-          strings -a dist/Image | grep -m1 "^Linux version"
-          strings -a ref/Image | grep -m1 "^Linux version"
-          python3 -I - dist/Image ref/Image <<'PY'
-          import sys
-          a, b = (open(p, "rb").read() for p in sys.argv[1:])
-          n = sum(x != y for x, y in zip(a, b)) + abs(len(a) - len(b))
-          print(f"Image: {len(a)} vs {len(b)} bytes, {n} bytes differ (build key, version string)")
-          PY
+          strings -a dist/Image | grep -m1 "^Linux version [0-9]"
+          strings -a ref/Image | grep -m1 "^Linux version [0-9]"
+          # Same kernel symbols (type and name) means the same code went into the image;
+          # addresses shift because the version string is shorter without Google's build number
+          if diff <(awk '{print $2, $3}' dist/System.map | sort -u) <(awk '{print $2, $3}' ref/System.map | sort -u) > systemmap.diff; then
+            echo "System.map has the same $(wc -l < dist/System.map) symbols as Google's"
+          else
+            head -20 systemmap.diff; echo "::warning::System.map differs from Google's in $(grep -c '^[<>]' systemmap.diff) lines"
+          fi
 
       - name: Check the phone's vendor modules against this kernel
         working-directory: ${{ env.W }}
@@ -162,7 +163,9 @@ jobs:
           cmp tools/selftest.img tools/base-boot.img && echo "Self-test: base boot.img reproduced exactly"
           mk --kernel dist/Image --key tools/testkey_rsa4096.pem --avbtool tools/avbtool.py -o release/boot.img
           # The GKI modules (zram, zsmalloc) are signed with this build's key and must ship with it
-          release=$(strings -a dist/Image | sed -n 's/^Linux version \([^ ]*\) .*/\1/p' | head -1)
+          release=$(strings -a dist/Image | sed -n 's/^Linux version \([0-9][^ ]*\) .*/\1/p' | head -1)
+          [ -n "$release" ] || { echo "::error::No kernel release string in Image"; exit 1; }
+          echo "Kernel release: $release"
           strings -a dist/system_dlkm.img | grep -q "vermagic=$release " ||
             { echo "::error::system_dlkm.img was not built for $release"; exit 1; }
           grep -c "u:object_r:system_dlkm_file:s0" <(strings -a dist/system_dlkm.img)
@@ -217,5 +220,6 @@ jobs:
             ${{ env.W }}/build.log
             ${{ env.W }}/mem.log
             ${{ env.W }}/symvers.diff
+            ${{ env.W }}/systemmap.diff
             ${{ env.W }}/abi-report.txt
           if-no-files-found: ignore
