@@ -43,13 +43,15 @@ jobs:
           # Work on whichever disk has more room (the runner's /mnt is usually the larger one)
           root_free=$(df --output=avail -BG / | tail -1 | tr -dc 0-9)
           mnt_free=$(df --output=avail -BG /mnt 2>/dev/null | tail -1 | tr -dc 0-9)
-          if [ "${mnt_free:-0}" -gt "$root_free" ]; then W=/mnt/gki; else W=$HOME/gki; fi
+          if [ "${mnt_free:-0}" -gt "$root_free" ]; then W=/mnt/gki; swap=/gki-swap; else W=$HOME/gki; swap=/mnt/gki-swap; fi
           sudo mkdir -p "$W" && sudo chown "$USER:$USER" "$W"
           echo "W=$W" >> "$GITHUB_ENV"
-          # Full LTO links vmlinux in one go; give it room beyond the 16 GB of RAM
-          sudo fallocate -l 8G "$W/../gki-swap" && sudo chmod 600 "$W/../gki-swap" &&
-            sudo mkswap -q "$W/../gki-swap" && sudo swapon "$W/../gki-swap" || echo "::warning::No extra swap"
-          df -h / "$W"; free -h; nproc
+          # Full LTO links vmlinux in one go and the first run's runner died at about
+          # that point; put generous swap on the disk the build does not use
+          [ -d "$(dirname "$swap")" ] || swap=/gki-swap
+          sudo fallocate -l 16G "$swap" && sudo chmod 600 "$swap" &&
+            sudo mkswap -q "$swap" && sudo swapon "$swap" || echo "::warning::No extra swap"
+          df -h / "$W"; free -h; swapon --show; nproc
 
       - name: Install repo
         run: |
@@ -72,14 +74,47 @@ jobs:
           repo init -m pinned.xml --no-use-superproject
           repo sync -c --no-tags --no-clone-bundle --no-use-superproject -j8
           git -C common log -1 --format='common: %H %s'
-          df -h .
+          # Only the clang the build config names is used; the others take several GB
+          clang=prebuilts/clang/host/linux-x86
+          ver=$(sed -n 's/^CLANG_VERSION=//p' common/build.config.constants)
+          [ -d "$clang/clang-$ver" ] || { echo "::error::clang-$ver not in $clang"; exit 1; }
+          du -sh "$clang"
+          for d in "$clang"/clang-*; do
+            [ -L "$d" ] || [ "$(basename "$d")" = "clang-$ver" ] && continue
+            # Keep anything a symlink in the clang dir points into
+            find "$clang" -maxdepth 1 -type l -exec readlink {} \; | grep -q "$(basename "$d")" && continue
+            echo "Pruning $d"; rm -rf "$d"
+          done
+          du -sh "$clang"; df -h .
 
       - name: Build (same command as Google CI)
         working-directory: ${{ env.W }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          BUILD_CONFIG=common/build.config.gki.aarch64 DIST_DIR="$W/dist" build/build.sh -j"$(nproc)" > build.log 2>&1 ||
-            { tail -100 build.log; exit 1; }
-          grep -iE "warning:|error:" build.log | head -50 || true
+          # Memory and disk once a minute, here and in mem.log
+          ( while sleep 60; do
+              echo "== $(date -u +%T) $(free -m | awk '/^Mem:/{printf "mem used %sM avail %sM", $3, $7} /^Swap:/{printf ", swap used %sM of %sM", $3, $2}'), $(df -h --output=avail "$W" | tail -1 | tr -d ' ') free"
+            done | tee -a mem.log ) &
+          # A runner that dies leaves no logs, so push the state to the ci-live branch
+          ( while sleep 120; do
+              d=$(mktemp -d)
+              { echo "run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID  $(date -u +%FT%TZ)"
+                free -m; swapon --show; df -h / "$W"
+                echo "---- memory"; tail -20 mem.log
+                echo "---- build"; tail -60 build.log | cut -c1-300; } > "$d/live.txt"
+              git -C "$d" init -q && git -C "$d" checkout -q -b ci-live && git -C "$d" add live.txt &&
+                git -C "$d" commit -qm live && git -C "$d" push -qf "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" ci-live
+              rm -rf "$d"
+            done ) > /dev/null 2>&1 &
+          set +e
+          BUILD_CONFIG=common/build.config.gki.aarch64 DIST_DIR="$W/dist" build/build.sh -j"$(nproc)" 2>&1 | tee build.log |
+            { grep --line-buffered -E "error|Error|FAILED|Killed|No space|vmlinux|MODPOST|Image" || true; }
+          rc=${PIPESTATUS[0]}
+          set -e
+          kill $(jobs -p) 2>/dev/null || true
+          [ "$rc" = 0 ] || { tail -100 build.log; exit "$rc"; }
+          echo "$(grep -c "warning:" build.log) warnings"
           ls -l dist
 
       - name: Compare with Google's certified build
@@ -180,6 +215,7 @@ jobs:
           name: logs
           path: |
             ${{ env.W }}/build.log
+            ${{ env.W }}/mem.log
             ${{ env.W }}/symvers.diff
             ${{ env.W }}/abi-report.txt
           if-no-files-found: ignore
